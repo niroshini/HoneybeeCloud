@@ -1,5 +1,4 @@
 // Setup basic express server
-const { json } = require('express');
 const express = require('express');
 const app = express();
 const server = require('http').createServer(app);
@@ -8,6 +7,7 @@ const formidable = require('formidable');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
+const faceApiService = require('./faceapiService');
 const {success, error} = require('./responseApi');
 
 const port = process.env.PORT || 3000;
@@ -31,7 +31,8 @@ io.on('connection', (socket) => {
 		var filePath = work.filePath;
 
 		const zip = new AdmZip(filePath);
-		zip.extractAllTo(path.join(__dirname, "/upload/job"), true);
+		const jobDir = path.join(__dirname, "/upload/job")
+		zip.extractAllTo(jobDir, true);
 		console.log("File content extracted");
 
 		fs.unlink(filePath, (err) => {
@@ -41,16 +42,28 @@ io.on('connection', (socket) => {
 			console.log("File deleted after extracting");
 		});
 
-		var resultToSend = "";
+		var resultToSend = Array();
 		if (method === "faceDetect") {
 			console.log("Start detecting face");
-		}
-		console.log("Sending result: " + resultToSend);
+			faceApiService.detect(jobDir)
+			.then((results) => {
+				console.log(results);
+				resultToSend = results
+
+				console.log("Sending result: " + resultToSend);
 		
-		socket.emit('results', {
-			result: resultToSend
-		});
-		console.log("Result sent");
+				socket.emit('results', {
+					result: resultToSend
+				});
+				console.log("Result sent");
+			})
+			.catch((error) => {
+				socket.emit('results', {
+					result: resultToSend
+				});
+				console.log("Error result sent");
+			});
+		}
 	});
 	
 });
