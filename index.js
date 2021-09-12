@@ -173,7 +173,13 @@ io.on('connection', (socket) => {
 app.post('/api/upload', (req, res) => {
 	console.log("Receiving file...");
 	const form = formidable();
-	form.uploadDir = __dirname + "/upload";
+	const uploadDir =__dirname + "/upload";
+	if (!fs.existsSync(uploadDir)) {
+		// if the upload directory does not exist, create it
+		fs.mkdirSync(uploadDir);
+	}
+
+	form.uploadDir = uploadDir;
 
 	form.parse(req, (err, fields, files) => {
 		if (err) {
