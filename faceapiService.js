@@ -11,7 +11,7 @@ const modelPathRoot = './models';
 let optionsSSDMobileNet;
 
 async function image(input) {
-    // read input image file and create tensor to be used for processing
+  // read input image file and create tensor to be used for processing
   let buffer;
   if (input.startsWith('http:') || input.startsWith('https:')) {
     const res = await fetch(input);
@@ -41,50 +41,57 @@ async function image(input) {
 }
 
 async function detect(tensor) {
-    try {
-        const result = await faceapi.detectAllFaces(tensor, optionsSSDMobileNet);
-        return result;
-    } catch (err) {
-        console.log("Error while detecting faces: " + err.message);
-        return [];
-    }
+  try {
+    const result = await faceapi.detectAllFaces(tensor, optionsSSDMobileNet);
+    return result;
+  } catch (err) {
+    console.log("Error while detecting faces: " + err.message);
+    return [];
+  }
 }
 
 async function main(jobDir) {
-    console.log("FaceAPI single-process test");
+  const startTime = new Date();
+  const dir = fs.readdirSync(jobDir);
 
-    await faceapi.tf.setBackend("tensorflow");
-    await faceapi.tf.enableProdMode();
-    // await faceapi.tf.ENV.setBackend("DEBUG", false);
-    await faceapi.tf.ready();
+  var results = Array();
 
-    console.log(
-        `Version: TensorFlow/JS ${faceapi.tf?.version_core} FaceAPI ${
-          faceapi.version.faceapi
-        } Backend: ${faceapi.tf?.getBackend()}`
-    );
+  for (const img of dir) {
+    const tensor = await image(path.join(jobDir, img));
+    const result = await detect(tensor);
+    results.push({ image_name: img, face_detected: result.length });
+    tensor.dispose();
+  }
 
-    console.log("Loading FaceAPI models");
-    const modelPath = path.join(__dirname, modelPathRoot);
-    await faceapi.nets.ssdMobilenetv1.loadFromDisk(modelPath);
-    optionsSSDMobileNet = new faceapi.SsdMobilenetv1Options({
-        minConfidence: 0.5,
-    });
+  const endTime = new Date();
 
-    const dir = fs.readdirSync(jobDir);
+  console.log('Time taken for processing ' + results.length + ' images: ' + (endTime.getTime() - startTime.getTime()) / 1000);
+  return results;
+}
 
-    var results = Array();
+async function loadModel() {
+  console.log("FaceAPI single-process test");
 
-    for (const img of dir) {
-        const tensor = await image(path.join(jobDir, img));
-        const result = await detect(tensor);
-        results.push({image_name:img, face_detected:result.length});
-        tensor.dispose();
-    }
+  await faceapi.tf.setBackend("tensorflow");
+  await faceapi.tf.enableProdMode();
+  // await faceapi.tf.ENV.setBackend("DEBUG", false);
+  await faceapi.tf.ready();
 
-    return results;
+  console.log(
+    `Version: TensorFlow/JS ${faceapi.tf?.version_core} FaceAPI ${faceapi.version.faceapi
+    } Backend: ${faceapi.tf?.getBackend()}`
+  );
+
+  console.log("Loading FaceAPI model");
+  const modelPath = path.join(__dirname, modelPathRoot);
+  await faceapi.nets.ssdMobilenetv1.loadFromDisk(modelPath);
+  optionsSSDMobileNet = new faceapi.SsdMobilenetv1Options({
+    minConfidence: 0.5,
+  });
+  console.log("FaceAPI model loaded");
 }
 
 module.exports = {
-    detect: main,
+  detect: main,
+  load: loadModel,
 };
