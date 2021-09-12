@@ -167,51 +167,6 @@ io.on('connection', (socket) => {
 	function sendStolenJobsToDelegator() {
 
 	}
-
-	// when delegator sends connection request
-	/* socket.on('work to do', (data) => {
-		console.log("Work received");
-		// send delegator the result of work
-		console.log(data);
-		var work = JSON.parse(data);
-		var method = work.method;
-		var filePath = work.filePath;
-
-		const zip = new AdmZip(filePath);
-		const jobDir = path.join(__dirname, "/upload/job");
-		zip.extractAllTo(jobDir, true);
-		console.log("File content extracted");
-
-		fs.unlink(filePath, (err) => {
-			if (err) {
-				console.log("Could not delete file");
-			}
-			console.log("File deleted after extracting");
-		});
-
-		var resultToSend = Array();
-		if (method === "faceDetect") {
-			console.log("Start detecting face");
-			faceApiService.detect(jobDir)
-				.then((results) => {
-					console.log(results);
-					resultToSend = results
-
-					console.log("Sending result: " + resultToSend);
-
-					socket.emit('results', {
-						result: resultToSend
-					});
-					console.log("Result sent");
-				})
-				.catch((error) => {
-					socket.emit('results', {
-						result: resultToSend
-					});
-					console.log("Error result sent");
-				});
-		}
-	}); */
 });
 
 // Receive file upload request
