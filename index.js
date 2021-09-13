@@ -10,6 +10,7 @@ const AdmZip = require('adm-zip');
 const faceApiService = require('./faceapiService');
 const { success, error } = require('./responseApi');
 const LQueue = require('linked-queue');
+const faceapiService = require('./faceapiService');
 
 const port = process.env.PORT || 3000;
 const resultSymbol = 'RESULT'
@@ -19,10 +20,12 @@ const messageBreak = '#';
 const jobDir = path.join(__dirname, "/upload/job");
 
 var jobPool = {
-	allInitJobsSent: false,
+	isAddingNewJobs: false,
+	isWorking: false,
+	allInitJobsReceived: false,
 	workType: "",
 	jobQueue: new LQueue(),
-	result: ""
+	resultToSend: resultSymbol
 };
 
 faceApiService.load();
@@ -33,39 +36,46 @@ server.listen(port, () => {
 
 // Establish socket connection
 io.on('connection', (socket) => {
-
 	console.log("Connected");
 
 	// WORKER COMMUNICATION THREAD PART START
 	// init signal received from delegator
 	socket.on('initSignal', (data) => {
+		console.log("Start stealing...");
 		stealFromDelegator();
 	});
 
 	// stolen jobs received from delegator
 	socket.on('stolenJobs', (data) => {
-		console.log(data);
+		// resetting allInitJobsReceived flag to be false;
+		// we will receive the related message from the server to set that flag
+		jobPool.allInitJobsReceived = false;
+
+		console.log("Received stolen jobs");
 		// send file received message to delegator so that 
-		// delegator can continue sending remaining files
+		// delegator can continue sending remaining files if any
 		socket.emit('FileReceivedByWorker');
 
 		// add stolen jobs to the pool;
 		addStolenJobsToPool(data);
 
 		// start worker’s consumer thread;
-		// if (jobPool.allInitJobsSent) {
-		// 	startConsumerThread();
-		// }
-	});
-
-	socket.on("resultsReceived", (data) => {
-		stealFromDelegator();
+		startConsumerThread();
 	});
 
 	// Received all the jobs in current batch
 	socket.on('allInitJobsSent', (data) => {
-		jobPool.allInitJobsSent = true;
-		startConsumerThread();
+		jobPool.allInitJobsReceived = true;
+
+		if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.allInitJobsReceived) {
+			// add message break and send the result to delegator
+			jobPool.resultToSend += messageBreak;
+			sendResultToDelegator();
+		}
+	});
+
+	socket.on("resultsReceived", (data) => {
+		stealFromDelegator();
 	});
 
 	// steal request received from delegator
@@ -91,73 +101,72 @@ io.on('connection', (socket) => {
 	// WORKER COMMUNICATION THREAD PART END
 
 	function addStolenJobsToPool(data) {
-		// TODO: currently only extracting to the job folder, need to add those extracted images to job pool list
+		jobPool.isAddingNewJobs = true;
 		var work = JSON.parse(data);
 		var filePath = work.filePath;
 
 		// add work method to jobpool
 		jobPool.workType = work.method;
 
+		// extract files in zip to job directory and add to job queue
 		const zip = new AdmZip(filePath);
-		zip.extractAllTo(jobDir, true);
-		console.log("File content extracted");
+		zip.getEntries().forEach((zipEntry) => {
+			if (zip.extractEntryTo(zipEntry, jobDir, true, true)) {
+				jobPool.jobQueue.enqueue(path.join(jobDir, zipEntry.entryName));
+			}
+		});
+
+		console.log("Jobs added to job pool");
 		fs.unlink(filePath, (err) => {
 			if (err) {
 				console.log("Could not delete file");
 			}
-			console.log("File deleted after extracting");
 		});
+
+		jobPool.isAddingNewJobs = false;
 	}
 
-	function startConsumerThread() {
-		// TODO: currently directly reading from the job folder instead of job list array
-		var resultToSend = resultSymbol;
-		if (jobPool.workType === "faceDetect") {
-			console.log("Start detecting face");
-			faceApiService.detect(jobDir)
-				.then((results) => {
-					results.forEach(imageResult => {
-						resultToSend += faceResultBreaker + imageResult.image_name + faceValueSeparator + imageResult.face_detected;
-					});
-					resultToSend += messageBreak;
-					deleteJobFromPool();
-					sendResultToDelegator(resultToSend);
-				})
-				.catch((error) => {
-					socket.emit('results', {
-						result: resultToSend
-					});
-					console.log("Error result sent" + error);
-				});
-		}
+	async function startConsumerThread() {
+		if (!jobPool.isWorking) {
+			jobPool.isWorking = true;
+			while (jobPool.jobQueue.length > 0) {
+				console.log("Found new job, will start working on it...");
+				var jobPath = jobPool.jobQueue.dequeue();
+				const detectedFaces = await faceapiService.detect(jobPath);
+				jobPool.resultToSend += faceResultBreaker + path.basename(jobPath) + faceValueSeparator + detectedFaces.length;
+				deleteJobFromPool(jobPath);
+			}
+			jobPool.isWorking = false;
+			if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.allInitJobsReceived) {
+				// add message break and send the result to delegator
+				jobPool.resultToSend += messageBreak;
+				sendResultToDelegator();
+			}
 
-		// job <- get first job in pool;
-		// while job 6= null do
-		// 	execute job and add result to list;
-		// 	if list:size >= buffer then
-		// 		send results to delegator ;
-		// sendResultToDelegator();
-		// 	end
-		// 	job <- get first job in pool
-		// end
-		// steal from delegator;
+		} else {
+			console.log("Already working ...");
+		}
 	}
 
 	function stealFromDelegator() {
 		socket.emit('StealRequest');
 	}
 
-	function sendResultToDelegator(resultToSend) {
-		console.log("Sending result");
+	function sendResultToDelegator() {
+		console.log("Done with the jobs in jobpool, now sending result...");
 
 		socket.emit('Results', {
-			result: resultToSend
+			result: jobPool.resultToSend
 		});
 		console.log("Result sent");
+		// reset the result after sending it to the delegator
+		jobPool.resultToSend = resultSymbol
 	}
 
-	function deleteJobFromPool() {
-		fs.rmdirSync(jobDir, { recursive: true }, err => { });
+	function deleteJobFromPool(jobPath) {
+		fs.unlink(jobPath, err => {
+			if (err) throw err;
+		});
 	}
 
 	function sendNoJobsToSteal() {
@@ -173,30 +182,28 @@ io.on('connection', (socket) => {
 app.post('/api/upload', (req, res) => {
 	console.log("Receiving file...");
 	const form = formidable();
-	const uploadDir =__dirname + "/upload";
-	if (!fs.existsSync(uploadDir)) {
-		// if the upload directory does not exist, create it
-		fs.mkdirSync(uploadDir);
-	}
-
-	form.uploadDir = uploadDir;
-
-	form.parse(req, (err, fields, files) => {
-		if (err) {
-			res.json(error({ data: "" }, "There was some error during the file upload"));
+	const uploadDir = __dirname + "/upload";
+	fs.mkdir(uploadDir, (error) => {
+		if (!error || error.code == 'EEXIST'){
+			form.uploadDir = uploadDir;
+		
+			form.parse(req, (err, fields, files) => {
+				if (err) {
+					res.json(error({ data: "" }, "There was some error during the file upload"));
+				}
+		
+				const oldPath = files.file.path;
+				const newPath = path.join(form.uploadDir, files.file.name);
+		
+				// renaming file to match the uploaded filename
+				fs.rename(oldPath, newPath, (err) => {
+					if (err) {
+						res.json(error({ data: "" }, "There was some error during the renaming of uploaded file"));
+					}
+					// file renamed successfully
+				});
+				res.json(success({ file_path: newPath }, "File has been uploaded to the provided path"));
+			});
 		}
-		console.log("file uploaded at : " + files.file.path);
-
-		const oldPath = files.file.path;
-		const newPath = path.join(form.uploadDir, files.file.name);
-
-		console.log('renaming file to match the uploaded filename');
-		fs.rename(oldPath, newPath, (err) => {
-			if (err) {
-				res.json(error({ data: "" }, "There was some error during the renaming of uploaded file"));
-			}
-			console.log('file renamed successfully');
-		});
-		res.json(success({ file_path: newPath }, "File has been uploaded to the provided path"));
 	});
 });

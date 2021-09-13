@@ -42,31 +42,20 @@ async function image(input) {
 
 async function detect(tensor) {
   try {
-    const result = await faceapi.detectAllFaces(tensor, optionsSSDMobileNet);
-    return result;
+    const detectedFaces = await faceapi.detectAllFaces(tensor, optionsSSDMobileNet);
+    return detectedFaces;
   } catch (err) {
     console.log("Error while detecting faces: " + err.message);
     return [];
   }
 }
 
-async function main(jobDir) {
-  const startTime = new Date();
-  const dir = fs.readdirSync(jobDir);
+async function main(jobPath) {
+  const tensor = await image(jobPath);
+  const detectedFaces = await detect(tensor);
+  tensor.dispose();
 
-  var results = Array();
-
-  for (const img of dir) {
-    const tensor = await image(path.join(jobDir, img));
-    const result = await detect(tensor);
-    results.push({ image_name: img, face_detected: result.length });
-    tensor.dispose();
-  }
-
-  const endTime = new Date();
-
-  console.log('Time taken for processing ' + results.length + ' images: ' + (endTime.getTime() - startTime.getTime()) / 1000);
-  return results;
+  return detectedFaces;
 }
 
 async function loadModel() {
@@ -92,6 +81,6 @@ async function loadModel() {
 }
 
 module.exports = {
-  detect: main,
   load: loadModel,
+  detect: main,
 };
