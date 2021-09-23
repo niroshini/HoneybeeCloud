@@ -9,10 +9,11 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const faceApiService = require('./faceapiService');
 const { success, error } = require('./responseApi');
-const LQueue = require('linked-queue');
 const faceapiService = require('./faceapiService');
 
 const port = process.env.PORT || 3000;
+
+const completedJobsbuffer = 10;
 const resultSymbol = 'RESULT'
 const faceResultBreaker = '!';
 const faceValueSeparator = ':';
@@ -24,8 +25,8 @@ var jobPool = {
 	isWorking: false,
 	allInitJobsReceived: false,
 	workType: "",
-	jobQueue: new LQueue(),
-	resultToSend: resultSymbol
+	jobQueue: [],
+	doneJobs: []
 };
 
 faceApiService.load();
@@ -67,15 +68,15 @@ io.on('connection', (socket) => {
 	socket.on('allInitJobsSent', (data) => {
 		jobPool.allInitJobsReceived = true;
 
-		if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.allInitJobsReceived) {
-			// add message break and send the result to delegator
-			jobPool.resultToSend += messageBreak;
+		if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.doneJobs.length > 0) {
 			sendResultToDelegator();
 		}
 	});
 
 	socket.on("resultsReceived", (data) => {
-		stealFromDelegator();
+		if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.allInitJobsReceived && jobPool.doneJobs.length == 0) {
+			stealFromDelegator();
+		}
 	});
 
 	// steal request received from delegator
@@ -112,7 +113,7 @@ io.on('connection', (socket) => {
 		const zip = new AdmZip(filePath);
 		zip.getEntries().forEach((zipEntry) => {
 			if (zip.extractEntryTo(zipEntry, jobDir, true, true)) {
-				jobPool.jobQueue.enqueue(path.join(jobDir, zipEntry.entryName));
+				jobPool.jobQueue.push(path.join(jobDir, zipEntry.entryName));
 			}
 		});
 
@@ -131,15 +132,23 @@ io.on('connection', (socket) => {
 			jobPool.isWorking = true;
 			while (jobPool.jobQueue.length > 0) {
 				console.log("Found new job, will start working on it...");
-				var jobPath = jobPool.jobQueue.dequeue();
+				var jobPath = jobPool.jobQueue.shift();
 				const detectedFaces = await faceapiService.detect(jobPath);
-				jobPool.resultToSend += faceResultBreaker + path.basename(jobPath) + faceValueSeparator + detectedFaces.length;
-				deleteJobFromPool(jobPath);
+				jobPool.doneJobs.push({
+					name: path.basename(jobPath),
+					faceCount: detectedFaces.length
+				});
+
+				deleteJobFromJobDirectory(jobPath);
+
+				if (jobPool.doneJobs.length >= completedJobsbuffer) {
+					sendResultToDelegator();
+					jobPool.isWorking = false;
+					return;
+				}
 			}
 			jobPool.isWorking = false;
 			if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.allInitJobsReceived) {
-				// add message break and send the result to delegator
-				jobPool.resultToSend += messageBreak;
 				sendResultToDelegator();
 			}
 
@@ -155,15 +164,21 @@ io.on('connection', (socket) => {
 	function sendResultToDelegator() {
 		console.log("Done with the jobs in jobpool, now sending result...");
 
+		var resultToSend = resultSymbol;
+		while (jobPool.doneJobs.length) {
+			const doneJob = jobPool.doneJobs.shift();
+			resultToSend += faceResultBreaker + doneJob.name + faceValueSeparator + doneJob.faceCount;
+		}
+		resultToSend += messageBreak;
+
 		socket.emit('Results', {
-			result: jobPool.resultToSend
+			result: resultToSend
 		});
 		console.log("Result sent");
 		// reset the result after sending it to the delegator
-		jobPool.resultToSend = resultSymbol
 	}
 
-	function deleteJobFromPool(jobPath) {
+	function deleteJobFromJobDirectory(jobPath) {
 		fs.unlink(jobPath, err => {
 			if (err) throw err;
 		});
