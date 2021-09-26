@@ -9,16 +9,19 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const faceApiService = require('./faceapiService');
 const { success, error } = require('./responseApi');
-const faceapiService = require('./faceapiService');
 
 const port = process.env.PORT || 3000;
 
-const completedJobsbuffer = 10;
-const resultSymbol = 'RESULT'
-const faceResultBreaker = '!';
-const faceValueSeparator = ':';
-const messageBreak = '#';
-const jobDir = path.join(__dirname, "/upload/job");
+const COMPLETED_JOBS_BUFFER = 10;
+const RESULT_SYMBOL = 'RESULT'
+const FACE_RESULT_BREAKER = '!';
+const FACE_VALUE_SEPARATOR = ':';
+const MESSAGE_BREAK = '#';
+const JOB_DIR = path.join(__dirname, '/upload/job');
+
+const STEAL_LIMIT = 5;
+const PARAM_SYMBOL = 'PARAM';
+const PARTITION_BREAK = 'PARTITION';
 
 var jobPool = {
 	isAddingNewJobs: false,
@@ -81,12 +84,21 @@ io.on('connection', (socket) => {
 
 	// steal request received from delegator
 	socket.on('stealRequest', (data) => {
-		// if job pool = empty then
-		// 	send no jobs left signal to the delegator;
-		// 	end
-		// else
-		// 	start victim thread;
-		// 	end
+		console.log('Received steal request from delegator');
+		var stolenJobs = [];
+		if (jobPool.jobQueue.length >= STEAL_LIMIT) {
+			while (stolenJobs.length < STEAL_LIMIT) {
+				const job = jobPool.jobQueue.shift();
+				stolenJobs.push(job);
+				deleteJobFromJobDirectory(job);
+			}
+		}
+
+		if (stolenJobs.length > 0) {
+			sendStolenJobsToDelegator(stolenJobs);
+		} else {
+			sendNoJobsToSteal();
+		}
 	});
 
 	// no jobs received from delegator
@@ -112,8 +124,8 @@ io.on('connection', (socket) => {
 		// extract files in zip to job directory and add to job queue
 		const zip = new AdmZip(filePath);
 		zip.getEntries().forEach((zipEntry) => {
-			if (zip.extractEntryTo(zipEntry, jobDir, true, true)) {
-				jobPool.jobQueue.push(path.join(jobDir, zipEntry.entryName));
+			if (zip.extractEntryTo(zipEntry, JOB_DIR, true, true)) {
+				jobPool.jobQueue.push(path.join(JOB_DIR, zipEntry.entryName));
 			}
 		});
 
@@ -133,7 +145,7 @@ io.on('connection', (socket) => {
 			while (jobPool.jobQueue.length > 0) {
 				console.log("Found new job, will start working on it...");
 				var jobPath = jobPool.jobQueue.shift();
-				const detectedFaces = await faceapiService.detect(jobPath);
+				const detectedFaces = await faceApiService.detect(jobPath);
 				jobPool.doneJobs.push({
 					name: path.basename(jobPath),
 					faceCount: detectedFaces.length
@@ -141,7 +153,7 @@ io.on('connection', (socket) => {
 
 				deleteJobFromJobDirectory(jobPath);
 
-				if (jobPool.doneJobs.length >= completedJobsbuffer) {
+				if (jobPool.doneJobs.length >= COMPLETED_JOBS_BUFFER) {
 					sendResultToDelegator();
 					jobPool.isWorking = false;
 					return;
@@ -164,18 +176,17 @@ io.on('connection', (socket) => {
 	function sendResultToDelegator() {
 		console.log("Done with the jobs in jobpool, now sending result...");
 
-		var resultToSend = resultSymbol;
+		var resultToSend = RESULT_SYMBOL;
 		while (jobPool.doneJobs.length) {
 			const doneJob = jobPool.doneJobs.shift();
-			resultToSend += faceResultBreaker + doneJob.name + faceValueSeparator + doneJob.faceCount;
+			resultToSend += FACE_RESULT_BREAKER + doneJob.name + FACE_VALUE_SEPARATOR + doneJob.faceCount;
 		}
-		resultToSend += messageBreak;
+		resultToSend += MESSAGE_BREAK;
 
 		socket.emit('Results', {
 			result: resultToSend
 		});
 		console.log("Result sent");
-		// reset the result after sending it to the delegator
 	}
 
 	function deleteJobFromJobDirectory(jobPath) {
@@ -185,11 +196,24 @@ io.on('connection', (socket) => {
 	}
 
 	function sendNoJobsToSteal() {
-
+		socket.emit('NoJobsToSteal');
+		console.log("No jobs to steal sent");
 	}
 
-	function sendStolenJobsToDelegator() {
+	function sendStolenJobsToDelegator(stolenJobs) {
+		console.log("Sending stolen jobs (from here) to Delegator ...");
 
+		var jobsToSend = PARAM_SYMBOL;
+		while (stolenJobs.length) {
+			const job = stolenJobs.shift();
+			jobsToSend += path.basename(job) + PARTITION_BREAK;
+		}
+		jobsToSend += MESSAGE_BREAK;
+
+		socket.emit('StolenJobs', {
+			stolenJobs: jobsToSend
+		});
+		console.log("Stolen jobs sent");
 	}
 });
 
@@ -199,17 +223,17 @@ app.post('/api/upload', (req, res) => {
 	const form = formidable();
 	const uploadDir = __dirname + "/upload";
 	fs.mkdir(uploadDir, (error) => {
-		if (!error || error.code == 'EEXIST'){
+		if (!error || error.code == 'EEXIST') {
 			form.uploadDir = uploadDir;
-		
+
 			form.parse(req, (err, fields, files) => {
 				if (err) {
 					res.json(error({ data: "" }, "There was some error during the file upload"));
 				}
-		
+
 				const oldPath = files.file.path;
 				const newPath = path.join(form.uploadDir, files.file.name);
-		
+
 				// renaming file to match the uploaded filename
 				fs.rename(oldPath, newPath, (err) => {
 					if (err) {
