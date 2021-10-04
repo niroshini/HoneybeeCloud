@@ -7,8 +7,9 @@ const formidable = require('formidable');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
+const { Worker, isMainThread, workerData } = require('worker_threads');
 const faceApiService = require('./faceapiService');
-const { success, error } = require('./responseApi');
+const { responseSuccess, responseError } = require('./responseApi');
 
 const port = process.env.PORT || 3000;
 
@@ -24,6 +25,7 @@ const PARAM_SYMBOL = 'PARAM';
 const PARTITION_BREAK = 'PARTITION';
 
 var jobPool = {
+	isDelegatorDoneWithJobs: false,
 	isAddingNewJobs: false,
 	isWorking: false,
 	allInitJobsReceived: false,
@@ -33,6 +35,9 @@ var jobPool = {
 };
 
 faceApiService.load();
+
+const form = formidable();
+const uploadDir = __dirname + "/upload";
 
 server.listen(port, () => {
 	console.log('Server listening at port %d', port);
@@ -45,12 +50,13 @@ io.on('connection', (socket) => {
 	// WORKER COMMUNICATION THREAD PART START
 	// init signal received from delegator
 	socket.on('initSignal', (data) => {
+		jobPool.isDelegatorDoneWithJobs = false;
 		console.log("Start stealing...");
 		stealFromDelegator();
 	});
 
 	// stolen jobs received from delegator
-	socket.on('stolenJobs', (data) => {
+	socket.on('stolenJobs', async (data) => {
 		// resetting allInitJobsReceived flag to be false;
 		// we will receive the related message from the server to set that flag
 		jobPool.allInitJobsReceived = false;
@@ -61,7 +67,7 @@ io.on('connection', (socket) => {
 		socket.emit('FileReceivedByWorker');
 
 		// add stolen jobs to the pool;
-		addStolenJobsToPool(data);
+		await addStolenJobsToPool(data);
 
 		// start worker’s consumer thread;
 		startConsumerThread();
@@ -109,11 +115,12 @@ io.on('connection', (socket) => {
 	// termination signal received from delegator
 	socket.on('terminationSignal', (data) => {
 		console.log("All jobs completed at delegator side and result has been presented");
+		jobPool.isDelegatorDoneWithJobs = true;
 		// terminate;
 	});
 	// WORKER COMMUNICATION THREAD PART END
 
-	function addStolenJobsToPool(data) {
+	async function addStolenJobsToPool(data) {
 		jobPool.isAddingNewJobs = true;
 		var work = JSON.parse(data);
 		var filePath = work.filePath;
@@ -170,7 +177,9 @@ io.on('connection', (socket) => {
 	}
 
 	function stealFromDelegator() {
-		socket.emit('StealRequest');
+		if (!jobPool.isDelegatorDoneWithJobs) {
+			socket.emit('StealRequest');
+		}
 	}
 
 	function sendResultToDelegator() {
@@ -197,7 +206,7 @@ io.on('connection', (socket) => {
 
 	function sendNoJobsToSteal() {
 		socket.emit('NoJobsToSteal');
-		console.log("No jobs to steal sent");
+		console.log("Sorry, but I do not have any jobs at the moment");
 	}
 
 	function sendStolenJobsToDelegator(stolenJobs) {
@@ -228,7 +237,7 @@ app.post('/api/upload', (req, res) => {
 
 			form.parse(req, (err, fields, files) => {
 				if (err) {
-					res.json(error({ data: "" }, "There was some error during the file upload"));
+					res.json(responseError({ data: "" }, "There was some error during the file upload"));
 				}
 
 				const oldPath = files.file.path;
@@ -237,11 +246,11 @@ app.post('/api/upload', (req, res) => {
 				// renaming file to match the uploaded filename
 				fs.rename(oldPath, newPath, (err) => {
 					if (err) {
-						res.json(error({ data: "" }, "There was some error during the renaming of uploaded file"));
+						res.json(responseError({ data: "" }, "There was some error during the renaming of uploaded file"));
 					}
 					// file renamed successfully
 				});
-				res.json(success({ file_path: newPath }, "File has been uploaded to the provided path"));
+				res.json(responseSuccess({ file_path: newPath }, "File has been uploaded to the provided path"));
 			});
 		}
 	});
