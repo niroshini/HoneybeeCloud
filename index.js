@@ -2,7 +2,10 @@
 const express = require('express');
 const app = express();
 const server = require('http').createServer(app);
-const io = require('socket.io')(server);
+const io = require('socket.io')(server, {
+	pingTimeout: 30000,
+	pingInterval: 2500
+});
 const formidable = require('formidable');
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +15,8 @@ const faceApiService = require('./faceapiService');
 const { responseSuccess, responseError } = require('./responseApi');
 
 const port = process.env.PORT || 3000;
+
+const WORKER_HEARTBEAT_INTERVAL = 2500;
 
 const COMPLETED_JOBS_BUFFER = 10;
 const RESULT_SYMBOL = 'RESULT'
@@ -36,9 +41,6 @@ var jobPool = {
 
 faceApiService.load();
 
-const form = formidable();
-const uploadDir = __dirname + "/upload";
-
 server.listen(port, () => {
 	console.log('Server listening at port %d', port);
 });
@@ -46,6 +48,11 @@ server.listen(port, () => {
 // Establish socket connection
 io.on('connection', (socket) => {
 	console.log("Connected");
+
+	setInterval(() => {
+		console.log("sending heartbeat");
+		socket.volatile.emit('ping');
+	}, WORKER_HEARTBEAT_INTERVAL);
 
 	// WORKER COMMUNICATION THREAD PART START
 	// init signal received from delegator
