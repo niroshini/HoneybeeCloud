@@ -22,6 +22,7 @@ const COMPLETED_JOBS_BUFFER = 10;
 const RESULT_SYMBOL = 'RESULT'
 const FACE_RESULT_BREAKER = '!';
 const FACE_VALUE_SEPARATOR = ':';
+const COMPUTATION_TIME_SEPARATOR = ',';
 const MESSAGE_BREAK = '#';
 const JOB_DIR = path.join(__dirname, '/upload/job');
 
@@ -157,12 +158,16 @@ io.on('connection', (socket) => {
 		if (!jobPool.isWorking) {
 			jobPool.isWorking = true;
 			while (jobPool.jobQueue.length > 0) {
+				const jobStartTime = process.hrtime.bigint();
 				console.log("Found new job, will start working on it...");
 				var jobPath = jobPool.jobQueue.shift();
 				const detectedFaces = await faceApiService.detect(jobPath);
+				const jobEndTime = process.hrtime.bigint();
+				const computationTime = (jobEndTime - jobStartTime) / BigInt(1000000);
 				jobPool.doneJobs.push({
 					name: path.basename(jobPath),
-					faceCount: detectedFaces.length
+					faceCount: detectedFaces.length,
+					computationTime: computationTime
 				});
 
 				deleteJobFromJobDirectory(jobPath);
@@ -195,7 +200,7 @@ io.on('connection', (socket) => {
 		var resultToSend = RESULT_SYMBOL;
 		while (jobPool.doneJobs.length) {
 			const doneJob = jobPool.doneJobs.shift();
-			resultToSend += FACE_RESULT_BREAKER + doneJob.name + FACE_VALUE_SEPARATOR + doneJob.faceCount;
+			resultToSend += FACE_RESULT_BREAKER + doneJob.name + FACE_VALUE_SEPARATOR + doneJob.faceCount + COMPUTATION_TIME_SEPARATOR + doneJob.computationTime;
 		}
 		resultToSend += MESSAGE_BREAK;
 
