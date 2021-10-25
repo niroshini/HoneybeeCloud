@@ -10,9 +10,9 @@ const formidable = require('formidable');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
-const { Worker, isMainThread, workerData } = require('worker_threads');
 const faceApiService = require('./faceapiService');
 const { responseSuccess, responseError } = require('./responseApi');
+const StatLogger = require("./StatLogger");
 
 const port = process.env.PORT || 3000;
 
@@ -30,7 +30,9 @@ const STEAL_LIMIT = 5;
 const PARAM_SYMBOL = 'PARAM';
 const PARTITION_BREAK = 'PARTITION';
 
-var jobPool = {
+const statLogger = new StatLogger();
+// const timeLogger = new TimeLogger(getCurrentTimeInMillis());
+const jobPool = {
 	isDelegatorDoneWithJobs: false,
 	isAddingNewJobs: false,
 	isWorking: false,
@@ -39,8 +41,13 @@ var jobPool = {
 	jobQueue: [],
 	doneJobs: []
 };
+var stealRequestTime;
 
 faceApiService.load();
+
+function getCurrentTimeInMillis() {
+	return Date.now();
+}
 
 server.listen(port, () => {
 	console.log('Server listening at port %d', port);
@@ -60,25 +67,30 @@ io.on('connection', (socket) => {
 	socket.on('initSignal', (data) => {
 		jobPool.isDelegatorDoneWithJobs = false;
 		console.log("Start stealing...");
+		stealRequestTime = getCurrentTimeInMillis();
 		stealFromDelegator();
 	});
 
 	// stolen jobs received from delegator
 	socket.on('stolenJobs', async (data) => {
+		const jobStealRequestTime = stealRequestTime;
+		const jobReceivedTime = getCurrentTimeInMillis();
+
 		// resetting allInitJobsReceived flag to be false;
 		// we will receive the related message from the server to set that flag
 		jobPool.allInitJobsReceived = false;
 
 		console.log("Received stolen jobs");
-		// send file received message to delegator so that 
-		// delegator can continue sending remaining files if any
-		socket.emit('FileReceivedByWorker');
 
 		// add stolen jobs to the pool;
-		await addStolenJobsToPool(data);
+		await addStolenJobsToPool(data, jobStealRequestTime, jobReceivedTime);
 
 		// start worker’s consumer thread;
 		startConsumerThread();
+		// send file received message to delegator so that 
+		// delegator can continue sending remaining files if any
+		socket.emit('FileReceivedByWorker');
+		stealRequestTime = getCurrentTimeInMillis();
 	});
 
 	// Received all the jobs in current batch
@@ -124,11 +136,14 @@ io.on('connection', (socket) => {
 	socket.on('terminationSignal', (data) => {
 		console.log("All jobs completed at delegator side and result has been presented");
 		jobPool.isDelegatorDoneWithJobs = true;
+
+		// write log to file
+		statLogger.saveLogToFile();
 		// terminate;
 	});
 	// WORKER COMMUNICATION THREAD PART END
 
-	async function addStolenJobsToPool(data) {
+	async function addStolenJobsToPool(data, stealRequestTime, jobReceivedTime) {
 		jobPool.isAddingNewJobs = true;
 		var work = JSON.parse(data);
 		var filePath = work.filePath;
@@ -137,10 +152,21 @@ io.on('connection', (socket) => {
 		jobPool.workType = work.method;
 
 		// extract files in zip to job directory and add to job queue
+		console.log("Extracting file : " + filePath);
 		const zip = new AdmZip(filePath);
 		zip.getEntries().forEach((zipEntry) => {
+			const unzipStartTime = getCurrentTimeInMillis();
 			if (zip.extractEntryTo(zipEntry, JOB_DIR, true, true)) {
+				const unzipEndTime = getCurrentTimeInMillis();
 				jobPool.jobQueue.push(path.join(JOB_DIR, zipEntry.entryName));
+
+				// Start logging timings for the job
+				statLogger.jobLogs[zipEntry.entryName] = {};
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.STEAL_REQUEST_TIME] = stealRequestTime;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_RECEIVED_TIME] = jobReceivedTime;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_TRANSMISSION_TIME] = (jobReceivedTime - stealRequestTime) / zip.getEntries().length;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.UNZIP_START_TIME] = unzipStartTime;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.UNZIP_END_TIME] = unzipEndTime;
 			}
 		});
 
@@ -158,17 +184,21 @@ io.on('connection', (socket) => {
 		if (!jobPool.isWorking) {
 			jobPool.isWorking = true;
 			while (jobPool.jobQueue.length > 0) {
-				const jobStartTime = process.hrtime.bigint();
+				const jobStartTime = getCurrentTimeInMillis();
 				console.log("Found new job, will start working on it...");
 				var jobPath = jobPool.jobQueue.shift();
 				const detectedFaces = await faceApiService.detect(jobPath);
-				const jobEndTime = process.hrtime.bigint();
-				const computationTime = (jobEndTime - jobStartTime) / BigInt(1000000);
+				const jobEndTime = getCurrentTimeInMillis();
+				const computationTime = jobEndTime - jobStartTime;
+				const fileName = path.basename(jobPath)
 				jobPool.doneJobs.push({
-					name: path.basename(jobPath),
+					name: fileName,
 					faceCount: detectedFaces.length,
 					computationTime: computationTime
 				});
+				statLogger.jobLogs[fileName][StatLogger.JOB_START_TIME] = jobStartTime;
+				statLogger.jobLogs[fileName][StatLogger.JOB_END_TIME] = jobEndTime;
+				statLogger.jobLogs[fileName][StatLogger.COMPUTATION_TIME] = computationTime;
 
 				deleteJobFromJobDirectory(jobPath);
 
@@ -190,24 +220,31 @@ io.on('connection', (socket) => {
 
 	function stealFromDelegator() {
 		if (!jobPool.isDelegatorDoneWithJobs) {
+			getCurrentTimeInMillis();
 			socket.emit('StealRequest');
 		}
 	}
 
 	function sendResultToDelegator() {
 		console.log("Done with the jobs in jobpool, now sending result...");
-
+		const completedJobs = []
 		var resultToSend = RESULT_SYMBOL;
 		while (jobPool.doneJobs.length) {
 			const doneJob = jobPool.doneJobs.shift();
 			resultToSend += FACE_RESULT_BREAKER + doneJob.name + FACE_VALUE_SEPARATOR + doneJob.faceCount + COMPUTATION_TIME_SEPARATOR + doneJob.computationTime;
+
+			completedJobs.push(doneJob.name);
 		}
 		resultToSend += MESSAGE_BREAK;
 
+		const resultSentTime = getCurrentTimeInMillis();
 		socket.emit('Results', {
 			result: resultToSend
 		});
 		console.log("Result sent");
+		completedJobs.forEach(jobFileName => {
+			statLogger.jobLogs[jobFileName][StatLogger.RESULT_SENT_TIME] = resultSentTime;
+		});
 	}
 
 	function deleteJobFromJobDirectory(jobPath) {
