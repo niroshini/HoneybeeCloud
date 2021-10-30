@@ -42,7 +42,13 @@ async function image(input) {
 
 async function detect(tensor) {
   try {
-    const detectedFaces = await faceapi.detectAllFaces(tensor, optionsSSDMobileNet);
+    var detectedFaces;
+    for (let i = 0; i < 3; i++) {
+      detectedFaces = await faceapi.detectAllFaces(tensor, optionsSSDMobileNet)
+        .withFaceLandmarks()
+        .withFaceExpressions();
+    }
+
     return detectedFaces;
   } catch (err) {
     console.log("Error while detecting faces: " + err.message);
@@ -74,6 +80,8 @@ async function loadModel() {
   console.log("Loading FaceAPI model");
   const modelPath = path.join(__dirname, modelPathRoot);
   await faceapi.nets.ssdMobilenetv1.loadFromDisk(modelPath);
+  await faceapi.nets.faceLandmark68Net.loadFromDisk(modelPath);
+  await faceapi.nets.faceExpressionNet.loadFromDisk(modelPath);
   optionsSSDMobileNet = new faceapi.SsdMobilenetv1Options({
     minConfidence: 0.5,
   });
