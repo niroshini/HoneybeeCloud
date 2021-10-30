@@ -74,7 +74,7 @@ io.on('connection', (socket) => {
 	// stolen jobs received from delegator
 	socket.on('stolenJobs', async (data) => {
 		const jobStealRequestTime = stealRequestTime;
-		const jobReceivedTime = getCurrentTimeInMillis();
+		const jobReceivedEndTime = getCurrentTimeInMillis();
 
 		// resetting allInitJobsReceived flag to be false;
 		// we will receive the related message from the server to set that flag
@@ -83,7 +83,7 @@ io.on('connection', (socket) => {
 		console.log("Received stolen jobs");
 
 		// add stolen jobs to the pool;
-		await addStolenJobsToPool(data, jobStealRequestTime, jobReceivedTime);
+		await addStolenJobsToPool(data, jobStealRequestTime, jobReceivedEndTime);
 
 		// start worker’s consumer thread;
 		startConsumerThread();
@@ -143,10 +143,14 @@ io.on('connection', (socket) => {
 	});
 	// WORKER COMMUNICATION THREAD PART END
 
-	async function addStolenJobsToPool(data, stealRequestTime, jobReceivedTime) {
+	async function addStolenJobsToPool(data, stealRequestTime, jobReceivedEndTime) {
 		jobPool.isAddingNewJobs = true;
 		var work = JSON.parse(data);
 		var filePath = work.filePath;
+
+		// load the job received start time from logger
+		const jobReceivedStartTime = statLogger.jobReceivedStartTime[path.basename(filePath)];
+		delete(statLogger.jobReceivedStartTime[path.basename(filePath)]);
 
 		// add work method to jobpool
 		jobPool.workType = work.method;
@@ -163,8 +167,10 @@ io.on('connection', (socket) => {
 				// Start logging timings for the job
 				statLogger.jobLogs[zipEntry.entryName] = {};
 				statLogger.jobLogs[zipEntry.entryName][StatLogger.STEAL_REQUEST_TIME] = stealRequestTime;
-				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_RECEIVED_TIME] = jobReceivedTime;
-				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_TRANSMISSION_TIME] = (jobReceivedTime - stealRequestTime) / zip.getEntries().length;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_RECEIVED_START_TIME] = jobReceivedStartTime;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_RECEIVED_END_TIME] = jobReceivedEndTime;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_WAIT_TIME] = (jobReceivedStartTime - stealRequestTime) / zip.getEntries().length;
+				statLogger.jobLogs[zipEntry.entryName][StatLogger.JOB_TRANSMISSION_TIME] = (jobReceivedEndTime - stealRequestTime) / zip.getEntries().length;
 				statLogger.jobLogs[zipEntry.entryName][StatLogger.UNZIP_START_TIME] = unzipStartTime;
 				statLogger.jobLogs[zipEntry.entryName][StatLogger.UNZIP_END_TIME] = unzipEndTime;
 			}
@@ -220,7 +226,7 @@ io.on('connection', (socket) => {
 
 	function stealFromDelegator() {
 		if (!jobPool.isDelegatorDoneWithJobs) {
-			getCurrentTimeInMillis();
+			stealRequestTime = getCurrentTimeInMillis();
 			socket.emit('StealRequest');
 		}
 	}
@@ -277,6 +283,7 @@ io.on('connection', (socket) => {
 
 // Receive file upload request
 app.post('/api/upload', (req, res) => {
+	const jobReceivedStartTime = getCurrentTimeInMillis();
 	console.log("Receiving file...");
 	const form = formidable();
 	const uploadDir = __dirname + "/upload";
@@ -288,6 +295,9 @@ app.post('/api/upload', (req, res) => {
 				if (err) {
 					res.json(responseError({ data: "" }, "There was some error during the file upload"));
 				}
+
+				// save the time we started receiving the (zip file) job
+				statLogger.jobReceivedStartTime[files.file.name] = jobReceivedStartTime;
 
 				const oldPath = files.file.path;
 				const newPath = path.join(form.uploadDir, files.file.name);
