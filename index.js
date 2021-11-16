@@ -58,8 +58,10 @@ io.on('connection', (socket) => {
 	console.log("Connected");
 
 	setInterval(() => {
-		console.log("sending heartbeat");
-		socket.volatile.emit('ping');
+		if (!jobPool.isDelegatorDoneWithJobs) {
+			console.log("sending heartbeat");
+			socket.volatile.emit('ping');
+		}
 	}, WORKER_HEARTBEAT_INTERVAL);
 
 	// WORKER COMMUNICATION THREAD PART START

@@ -23,8 +23,16 @@ class StatLogger {
   }
 
   saveLogToFile() {
+    var totalJobWaitTime = 0;
+    var totalJobTransmissionTime = 0;
+    var totalComputationTime = 0;
+    var totalJobs = 0;
     var log = StatLogger.logHeader();
     for (var key in this.jobLogs) {
+      totalJobs++;
+      totalJobWaitTime += parseInt(this.jobLogs[key][StatLogger.JOB_WAIT_TIME]);
+      totalJobTransmissionTime += parseInt(this.jobLogs[key][StatLogger.JOB_TRANSMISSION_TIME]);
+      totalComputationTime += parseInt(this.jobLogs[key][StatLogger.COMPUTATION_TIME]);
       log += `\n${key},${this.jobLogs[key][StatLogger.STEAL_REQUEST_TIME]},${this.jobLogs[key][StatLogger.JOB_RECEIVED_START_TIME]},${this.jobLogs[key][StatLogger.JOB_RECEIVED_END_TIME]},${this.jobLogs[key][StatLogger.JOB_WAIT_TIME]},${this.jobLogs[key][StatLogger.JOB_TRANSMISSION_TIME]},${this.jobLogs[key][StatLogger.UNZIP_START_TIME]},${this.jobLogs[key][StatLogger.UNZIP_END_TIME]},${this.jobLogs[key][StatLogger.JOB_START_TIME]},${this.jobLogs[key][StatLogger.JOB_END_TIME]},${this.jobLogs[key][StatLogger.COMPUTATION_TIME]},${this.jobLogs[key][StatLogger.RESULT_SENT_TIME]}`;
     }
     fs.writeFile(path.join(__dirname, 'runStat.csv'), log, (err) => {
@@ -32,6 +40,15 @@ class StatLogger {
         console.log("Could not write log to file");
       }
     });
+
+    const summary = `Execution Summary: Total jobs completed=${totalJobs}, Avg job wait time=${totalJobWaitTime/totalJobs}, Avg job transmission time=${totalJobTransmissionTime/totalJobs}, Avg computation time=${totalComputationTime/totalJobs}`;
+    fs.writeFile(path.join(__dirname, 'runLog.txt'), summary, (err) => {
+      if (err) {
+        console.log("Could not write log to file");
+      }
+    });
+
+    console.log(summary)
   }
 }
 
