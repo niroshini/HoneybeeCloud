@@ -42,6 +42,7 @@ const jobPool = {
 	doneJobs: []
 };
 var stealRequestTime;
+var writeResultCount = 0;
 
 faceApiService.load();
 
@@ -105,7 +106,8 @@ io.on('connection', (socket) => {
 	});
 
 	socket.on("resultsReceived", (data) => {
-		if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.allInitJobsReceived && jobPool.doneJobs.length == 0) {
+		writeResultCount -= 1;
+		if (!jobPool.isAddingNewJobs && jobPool.jobQueue.length == 0 && jobPool.allInitJobsReceived && jobPool.doneJobs.length == 0 && writeResultCount == 0) {
 			stealFromDelegator();
 		}
 	});
@@ -212,8 +214,10 @@ io.on('connection', (socket) => {
 
 				if (jobPool.doneJobs.length >= COMPLETED_JOBS_BUFFER) {
 					sendResultToDelegator();
-					jobPool.isWorking = false;
-					return;
+					if (jobPool.jobQueue.length == 0) {
+						jobPool.isWorking = false;
+						return;
+					}
 				}
 			}
 			jobPool.isWorking = false;
@@ -249,6 +253,7 @@ io.on('connection', (socket) => {
 		socket.emit('Results', {
 			result: resultToSend
 		});
+		writeResultCount += 1;
 		console.log("Result sent");
 		completedJobs.forEach(jobFileName => {
 			statLogger.jobLogs[jobFileName][StatLogger.RESULT_SENT_TIME] = resultSentTime;
