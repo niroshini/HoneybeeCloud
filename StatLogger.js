@@ -1,6 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * Helper class to log job timings
+ */
 class StatLogger {
   static JOB_ID = "jobId";
   static STEAL_REQUEST_TIME = "stealRequestTime";
@@ -18,10 +21,25 @@ class StatLogger {
   jobLogs = [];
   jobReceivedStartTime = [];
 
+  /**
+   * 
+   * @returns Generate and return header for the log
+   */
   static logHeader() {
     return `${this.JOB_ID},${this.STEAL_REQUEST_TIME},${this.JOB_RECEIVED_START_TIME},${this.JOB_RECEIVED_END_TIME},${this.JOB_WAIT_TIME},${this.JOB_TRANSMISSION_TIME},${this.UNZIP_START_TIME},${this.UNZIP_END_TIME},${this.JOB_START_TIME},${this.JOB_END_TIME},${this.COMPUTATION_TIME},${this.RESULT_SENT_TIME}`;
   }
 
+  /**
+   * 
+   * @returns The total number of jobs completed
+   */
+  getCompletedJobsCount() {
+    return Object.keys(this.jobLogs).length;
+  }
+
+  /**
+   * Saves (and prints) log to a file
+   */
   saveLogToFile() {
     var totalJobWaitTime = 0;
     var totalJobTransmissionTime = 0;

@@ -88,6 +88,9 @@ io.on('connection', (socket) => {
 		// add stolen jobs to the pool;
 		await addStolenJobsToPool(data, jobStealRequestTime, jobReceivedEndTime);
 
+		// optional delaying of worker to mimic slow worker
+		await delayWorker(false);
+
 		// start worker’s consumer thread;
 		startConsumerThread();
 		// send file received message to delegator so that 
@@ -188,6 +191,20 @@ io.on('connection', (socket) => {
 		});
 
 		jobPool.isAddingNewJobs = false;
+	}
+
+	/**
+	 * Mimics slow worker. If enabled the worker will wait for the provided amount of time before starting the obtained work
+	 * @param {Boolean} delayWorker True if the worker is to be delayed, false otherwise
+	 */
+	async function delayWorker(delayWorker) {
+		const delayingThresholdJobCount = 150;
+		const delayTimeForWorkerInMillis = 20000;
+		if (delayWorker) {
+			if (statLogger.getCompletedJobsCount() > delayingThresholdJobCount) {
+				await new Promise(r => setTimeout(r, delayTimeForWorkerInMillis));
+			}
+		}
 	}
 
 	async function startConsumerThread() {
